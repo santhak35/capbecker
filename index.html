@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>DF 517 Wing-Null Trainer (Becker DF-517 – CAP Sprite + Prop + Bank + Shadow + Zoom)</title>
+  <title>DF 517 Wing-Null Trainer (Becker DF-517 – CAP Sprite + Prop + Bank + Shadow + Zoom + ELT Audio)</title>
   <style>
     :root{
       --bg:#0b1020; --panel:#121a33; --text:#e9eeff; --muted:#9fb0ff;
@@ -56,6 +56,7 @@
     th,td{border-bottom:1px solid #243060; padding:6px 6px; text-align:left;}
     th{color:var(--muted); font-weight:600;}
     .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}
+    input[type="range"]{width:130px;}
   </style>
 </head>
 <body>
@@ -89,7 +90,18 @@
         <button id="btnZoomIn">Zoom +</button>
         <button id="btnZoomOut">Zoom −</button>
         <button id="btnZoomReset">Zoom Reset</button>
+
+        <!-- ELT AUDIO -->
+        <button id="btnAudio">ELT Audio: OFF</button>
+        <label class="small" style="display:flex; align-items:center; gap:8px; padding:6px 0;">
+          Vol <input id="audioVol" type="range" min="0" max="100" value="45" />
+        </label>
+
         <button id="btnReset">Reset</button>
+      </div>
+
+      <div class="small" style="margin-top:6px;">
+        Note: Browsers require a click to enable audio. “ELT Audio: ON” uses generated audio (no files).
       </div>
     </div>
 
@@ -335,6 +347,91 @@
     history:[]
   };
 
+  // =====================
+  // ELT AUDIO (Web Audio)
+  // =====================
+  const audio = {
+    ctx: null,
+    master: null,
+    osc: null,
+    lfo: null,
+    lfoGain: null,
+    enabled: false,
+    userVol: 0.45,     // 0..1 from slider
+    baseHz: 850,       // center frequency
+    warbleHz: 7.0,     // warble rate
+    warbleDepth: 450,  // +/- Hz depth
+    pulseHz: 2.2       // pulse rate
+  };
+
+  function initAudioOnce(){
+    if (audio.ctx) return;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    audio.ctx = new Ctx();
+
+    audio.master = audio.ctx.createGain();
+    audio.master.gain.value = 0.0;
+    audio.master.connect(audio.ctx.destination);
+
+    audio.osc = audio.ctx.createOscillator();
+    audio.osc.type = 'sine';
+    audio.osc.frequency.value = audio.baseHz;
+
+    audio.lfo = audio.ctx.createOscillator();
+    audio.lfo.type = 'sine';
+    audio.lfo.frequency.value = audio.warbleHz;
+
+    audio.lfoGain = audio.ctx.createGain();
+    audio.lfoGain.gain.value = audio.warbleDepth;
+
+    audio.lfo.connect(audio.lfoGain);
+    audio.lfoGain.connect(audio.osc.frequency);
+
+    audio.osc.connect(audio.master);
+
+    audio.osc.start();
+    audio.lfo.start();
+  }
+
+  function setAudioEnabled(on){
+    initAudioOnce();
+    audio.enabled = on;
+
+    if (audio.ctx.state === 'suspended') audio.ctx.resume();
+
+    const now = audio.ctx.currentTime;
+    audio.master.gain.cancelScheduledValues(now);
+    audio.master.gain.setTargetAtTime(on ? 0.0001 : 0.0, now, 0.03);
+  }
+
+  function updateEltAudio(sig01){
+    if (!audio.ctx || !audio.enabled) return;
+
+    // If you want audio ONLY when "Reveal ELT" is on, uncomment:
+    // if (!state.reveal) sig01 = 0;
+
+    const t = performance.now() / 1000;
+    const phase = (t * audio.pulseHz) % 1;
+
+    // Pulse envelope: quick attack, slower decay
+    const env = phase < 0.12 ? (phase / 0.12) : Math.max(0, 1 - (phase - 0.12) / 0.55);
+
+    // Loudness follows signal strength with mild compression
+    const loud = Math.pow(sig01, 1.6) * env * audio.userVol;
+
+    const now = audio.ctx.currentTime;
+    const targetGain = clamp(loud, 0, 0.35);
+    audio.master.gain.setTargetAtTime(targetGain, now, 0.02);
+
+    // Warble gets stronger as signal increases
+    const depth = 220 + 520 * Math.pow(sig01, 0.9);
+    audio.lfoGain.gain.setTargetAtTime(depth, now, 0.04);
+
+    // Center frequency shifts a bit with signal
+    const base = 700 + 400 * sig01;
+    audio.osc.frequency.setTargetAtTime(base, now, 0.04);
+  }
+
   // ===== Signal model =====
   function signalStrength(distNm){
     const base = 1 / (1 + Math.pow(distNm/3.2, 2));
@@ -364,6 +461,9 @@
   const radEl = document.getElementById('rad');
   const dmeEl = document.getElementById('dme');
   const zoomTxt = document.getElementById('zoomTxt');
+
+  const btnAudio = document.getElementById('btnAudio');
+  const audioVol = document.getElementById('audioVol');
 
   const trainerState = document.getElementById('trainerState');
   const quizArea = document.getElementById('quizArea');
@@ -721,25 +821,19 @@
   }
 
   function drawCapRoundel(ctx, x, y, r){
-    // Simplified CAP-style roundel (not an official seal):
-    // blue ring + white inner + red triangle
     ctx.save();
     ctx.translate(x, y);
 
-    // outer ring
     ctx.fillStyle = '#1b3f8c';
     ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.fill();
 
-    // inner white
     ctx.fillStyle = '#f6f9ff';
     ctx.beginPath(); ctx.arc(0,0,r*0.72,0,Math.PI*2); ctx.fill();
 
-    // thin blue border
     ctx.strokeStyle = 'rgba(0,0,0,0.18)';
     ctx.lineWidth = Math.max(1, r*0.18);
     ctx.beginPath(); ctx.arc(0,0,r*0.86,0,Math.PI*2); ctx.stroke();
 
-    // red triangle
     ctx.fillStyle = '#d34b4b';
     ctx.beginPath();
     ctx.moveTo(0, -r*0.52);
@@ -748,7 +842,6 @@
     ctx.closePath();
     ctx.fill();
 
-    // center dot
     ctx.fillStyle = 'rgba(0,0,0,0.18)';
     ctx.beginPath(); ctx.arc(0,0,r*0.08,0,Math.PI*2); ctx.fill();
 
@@ -773,42 +866,39 @@
 
     ctx.save();
 
-    // bank illusion: small squash + subtle counter-rotate
     const yScale = 1.0 - Math.abs(bankT)*0.10;
     ctx.scale(1.0 + Math.abs(bankT)*0.02, yScale);
     ctx.rotate(-bankT * 0.06);
 
-    // ========== WINGS ==========
+    // Wings
     ctx.save();
     ctx.fillStyle = white;
     ctx.beginPath();
     ctx.roundRect(-wingSpan/2, -wingChord/2, wingSpan, wingChord, wingChord*0.35);
     ctx.fill();
 
-    // blue band
     ctx.fillStyle = blue;
     ctx.beginPath();
     ctx.roundRect(-wingSpan*0.15, -wingChord/2, wingSpan*0.30, wingChord, wingChord*0.30);
     ctx.fill();
 
-    // RED TIPS (requested) — wings
+    // Red tips wings
     ctx.fillStyle = red;
     ctx.beginPath();
     ctx.roundRect(-wingSpan/2, -wingChord/2, wingSpan*0.11, wingChord, wingChord*0.30);
     ctx.roundRect(wingSpan/2 - wingSpan*0.11, -wingChord/2, wingSpan*0.11, wingChord, wingChord*0.30);
     ctx.fill();
 
-    // CAP roundels on wings (requested)
+    // CAP roundels on wings
     const rr = L*0.055;
     drawCapRoundel(ctx, -wingSpan*0.25, 0, rr);
     drawCapRoundel(ctx, +wingSpan*0.25, 0, rr);
 
-    // Wing outline
     ctx.strokeStyle = 'rgba(0,0,0,0.18)';
     ctx.lineWidth = Math.max(1, sizePx*0.010);
     ctx.strokeRect(-wingSpan/2, -wingChord/2, wingSpan, wingChord);
 
-    // Tail number on right wing (top-down readability)
+    // Tail number on right wing (vertical orientation)
     ctx.save();
     ctx.fillStyle = 'rgba(10,12,18,0.70)';
     ctx.font = `700 ${Math.max(8, sizePx*0.09)}px ui-monospace, Menlo, Consolas, monospace`;
@@ -821,40 +911,36 @@
 
     ctx.restore();
 
-    // ========== FUSELAGE ==========
+    // Fuselage
     ctx.fillStyle = white;
     ctx.beginPath();
     ctx.roundRect(-fusW/2, -L*0.40, fusW, L*0.70, fusW*0.6);
     ctx.fill();
 
-    // blue belly hint
     ctx.fillStyle = blue;
     ctx.beginPath();
     ctx.roundRect(-fusW/2, L*0.02, fusW, L*0.16, fusW*0.5);
     ctx.fill();
 
-    // red/blue accent stripe
     ctx.fillStyle = red;
     ctx.fillRect(-fusW/2, -L*0.05, fusW, L*0.04);
     ctx.fillStyle = blue;
     ctx.fillRect(-fusW/2, -L*0.01, fusW, L*0.04);
 
-    // canopy
     ctx.fillStyle = 'rgba(25,35,65,0.55)';
     ctx.beginPath();
     ctx.roundRect(-fusW*0.55, -L*0.25, fusW*1.10, L*0.18, fusW*0.5);
     ctx.fill();
 
-    // nose cone
     ctx.fillStyle = 'rgba(0,0,0,0.18)';
     ctx.beginPath();
     ctx.ellipse(0, -L*0.43, fusW*0.55, fusW*0.55, 0, 0, Math.PI*2);
     ctx.fill();
 
-    // fuselage CAP roundel (requested)
+    // CAP roundel on fuselage
     drawCapRoundel(ctx, 0, L*0.07, L*0.045);
 
-    // tail number on fuselage near tail (top-down)
+    // Tail number on fuselage near tail
     ctx.save();
     ctx.fillStyle = 'rgba(10,12,18,0.68)';
     ctx.font = `800 ${Math.max(7, sizePx*0.075)}px ui-monospace, Menlo, Consolas, monospace`;
@@ -864,26 +950,26 @@
     ctx.fillText(TAIL_NUMBER, 0, 0);
     ctx.restore();
 
-    // ========== TAIL ==========
+    // Tailplane
     ctx.fillStyle = white;
     ctx.beginPath();
     ctx.roundRect(-tailSpan/2, L*0.25, tailSpan, tailChord, tailChord*0.35);
     ctx.fill();
 
-    // RED TIPS (requested) — tailplane tips
+    // Red tips tailplane
     ctx.fillStyle = red;
     ctx.beginPath();
     ctx.roundRect(-tailSpan/2, L*0.25, tailSpan*0.18, tailChord, tailChord*0.30);
     ctx.roundRect(tailSpan/2 - tailSpan*0.18, L*0.25, tailSpan*0.18, tailChord, tailChord*0.30);
     ctx.fill();
 
-    // vertical tail (rudder) red
+    // Vertical tail red
     ctx.fillStyle = red;
     ctx.beginPath();
     ctx.roundRect(-fusW*0.28, L*0.18, fusW*0.56, L*0.16, fusW*0.22);
     ctx.fill();
 
-    // ========== PROPELLER (rotating) ==========
+    // Propeller
     const propR = sizePx*0.14;
     ctx.save();
     ctx.translate(0, -L*0.49);
@@ -912,7 +998,7 @@
 
     ctx.restore();
 
-    // outline
+    // Outline
     ctx.strokeStyle = dark;
     ctx.lineWidth = Math.max(1, sizePx*0.010);
     ctx.beginPath();
@@ -1033,9 +1119,7 @@
       mctx.restore();
     }
 
-    // ==========================
-    // Aircraft sprite draw
-    // ==========================
+    // aircraft sprite draw
     const hdg = toRad(state.hdg);
 
     // zoom-based scaling effect
@@ -1116,6 +1200,12 @@
     state.trainer.lastNullHdg = null;
     state.trainer.lastComputed = null;
     hideComputedTick();
+
+    // keep audio state but fade to zero
+    if (audio.ctx) {
+      const now = audio.ctx.currentTime;
+      audio.master.gain.setTargetAtTime(0.0, now, 0.03);
+    }
   }
 
   document.getElementById('btnCruise').onclick = () => setSpeed('cruise');
@@ -1153,6 +1243,16 @@
     rightBtn.disabled = leftOnly.checked;
     trainerState.textContent = `Status: Ready. ${leftOnly.checked?'LEFT-only SOP enabled.':'Pick RIGHT or LEFT 360.'}`;
   });
+
+  // ELT AUDIO UI
+  btnAudio.onclick = () => {
+    const turningOn = !audio.enabled;
+    setAudioEnabled(turningOn);
+    btnAudio.textContent = `ELT Audio: ${turningOn ? 'ON' : 'OFF'}`;
+  };
+  audioVol.oninput = () => {
+    audio.userVol = (parseInt(audioVol.value, 10) || 0) / 100;
+  };
 
   // keyboard
   const keys = new Set();
@@ -1251,6 +1351,9 @@
       state.sigSmooth = lerp(state.sigSmooth, sigRaw, FILTER.signalAlpha);
     }
 
+    // ELT AUDIO follows smoothed signal
+    updateEltAudio(state.sigSmooth ?? 0);
+
     if(state.sigSmooth >= FILTER.lsThreshold){
       state.lastSignalT = performance.now();
     }
@@ -1281,6 +1384,7 @@
   renderHistory();
   leftOnly.dispatchEvent(new Event('change'));
   setZoom(1.0);
+  audio.userVol = (parseInt(audioVol.value, 10) || 45) / 100;
   requestAnimationFrame(loop);
 })();
 </script>
