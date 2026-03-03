@@ -1,3 +1,9 @@
+<!--ELT Search using Becker and Wing Null Method.'
+Author:  Kartik Santhanam 3/1/2026
+Updates....
+1. Added Becker graphics
+2. Added Cap Plane sprite 
+3. Added ELT Sound  -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -432,15 +438,20 @@
     audio.osc.frequency.setTargetAtTime(base, now, 0.04);
   }
 
-  // ===== Signal model =====
-  function signalStrength(distNm){
-    const base = 1 / (1 + Math.pow(distNm/3.2, 2));
-    const flutter = (distNm < 2.0)
-      ? FILTER.flutterScale*(0.18*Math.sin(performance.now()/170) + 0.12*Math.sin(performance.now()/63))
-      : 0;
-    const noisy = base + flutter + FILTER.sigNoiseScale*(Math.random()-0.5)*0.03;
-    return Math.max(0, Math.min(1, noisy));
-  }
+  // ===== Signal model modified for Wing Null 3/3/2026 =====
+ function signalStrength(distNm, relBearingDeg){
+  const base = 1 / (1 + Math.pow(distNm/3.2, 2));
+
+  // Convert relative bearing to radians
+  const relRad = relBearingDeg * Math.PI / 180;
+
+  // Bottom antenna pattern: strong fore/aft, null off wings
+  const antennaPattern = Math.abs(Math.cos(relRad));
+  // const antennaPattern = Math.pow(Math.abs(Math.cos(relRad)), 1.8); 
+  const combined = base * antennaPattern;
+
+  return Math.max(0, Math.min(1, combined));
+}
   function dfNeedleBearing(trueBearing, distNm){
     const baseNoise = (distNm < 2.0) ? state.closeNoiseDeg : state.dfNoiseDeg;
     const scale = (distNm < 2.0) ? FILTER.nearNoiseScale : FILTER.farNoiseScale;
@@ -1337,7 +1348,9 @@
 
     const brgTrue = bearingFromTo(state.ax, state.ay, state.ex, state.ey);
     const dToELT = Math.hypot(state.ex-state.ax, state.ey-state.ay);
-    const sigRaw = signalStrength(dToELT);
+    const relTrue = norm360(brgTrue - state.hdg);
+    const sigRaw = signalStrength(dToELT, relTrue);
+  
     const dfMagRaw = dfNeedleBearing(brgTrue, dToELT);
     const dfRelRaw = norm360(dfMagRaw - state.hdg);
 
