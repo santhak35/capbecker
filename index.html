@@ -1,15 +1,14 @@
-<!--ELT Search using Becker and Wing Null Method.'
-Author:  Kartik Santhanam 3/1/2026
-Updates....
-1. Added Becker graphics
-2. Added Cap Plane sprite 
-3. Added ELT Sound  -->
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>DF 517 Wing-Null Trainer (Becker DF-517 – CAP Sprite + Prop + Bank + Shadow + Zoom + ELT Audio)</title>
+
+  <!-- Leaflet (background map under your existing canvas) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
   <style>
     :root{
       --bg:#0b1020; --panel:#121a33; --text:#e9eeff; --muted:#9fb0ff;
@@ -17,7 +16,31 @@ Updates....
     }
     html,body{height:100%; margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; background:var(--bg); color:var(--text);}
     .wrap{display:grid; grid-template-columns: 1fr 420px; gap:12px; padding:12px; box-sizing:border-box; height:100%;}
-    canvas#map{width:100%; height:100%; background:linear-gradient(180deg,#050816,#0b1020); border:1px solid var(--line); border-radius:10px;}
+
+    /* Map wrapper: Leaflet behind, your canvas on top */
+    #mapWrap{
+      position:relative;
+      width:100%;
+      height:100%;
+      border:1px solid var(--line);
+      border-radius:10px;
+      overflow:hidden;
+      background:linear-gradient(180deg,#050816,#0b1020);
+    }
+    #leaflet{
+      position:absolute;
+      inset:0;
+      z-index:0;
+    }
+    canvas#map{
+      position:absolute;
+      inset:0;
+      z-index:1;
+      width:100%;
+      height:100%;
+      background:transparent; /* let satellite/sectional show through */
+    }
+
     .side{display:flex; flex-direction:column; gap:12px; overflow:auto;}
     .card{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px;}
     .row{display:flex; align-items:center; justify-content:space-between; gap:10px; margin:6px 0;}
@@ -67,7 +90,12 @@ Updates....
 </head>
 <body>
 <div class="wrap">
-  <canvas id="map"></canvas>
+
+  <!-- Leaflet background + existing canvas overlay -->
+  <div id="mapWrap">
+    <div id="leaflet"></div>
+    <canvas id="map"></canvas>
+  </div>
 
   <div class="side">
 
@@ -92,10 +120,14 @@ Updates....
       <div class="btns">
         <button id="btnCruise">Cruise</button>
         <button id="btnSlow">Slow Flight</button>
-        <button id="btnCenter">Center Hdg</button>
+        <button id="btnMaxSpd">Max Speed</button>
         <button id="btnZoomIn">Zoom +</button>
         <button id="btnZoomOut">Zoom −</button>
         <button id="btnZoomReset">Zoom Reset</button>
+
+        <!-- Background layer buttons -->
+        <button id="btnSat" class="primary">Satellite</button>
+        <button id="btnSec">Sectional</button>
 
         <!-- ELT AUDIO -->
         <button id="btnAudio">ELT Audio: OFF</button>
@@ -274,6 +306,54 @@ Updates....
   }
   function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
 
+  // =====================
+  // SBJ Geodetic Anchor
+  // =====================
+  const SBJ_LAT = 40.5830442;
+  const SBJ_LON = -74.7417914;
+
+  function nmToLatLon(xNm, yNm){
+    const lat = SBJ_LAT + (yNm / 60);
+    const lon = SBJ_LON + (xNm / (60 * Math.cos(SBJ_LAT * Math.PI / 180)));
+    return { lat, lon };
+  }
+
+  // =====================
+  // Leaflet background map (under canvas)
+  // =====================
+  // Calibrate Leaflet zoom so zoom=1.0 roughly matches BASE_PPNM=28 at SBJ lat.
+  // pixels per NM target: 28 => meters per pixel = 1852/28 = 66.14
+  // z = log2(156543*cos(lat)/mpp) ≈ 10.81 at SBJ
+  const LEAFLET_Z0 = 10.81;
+
+  const leaflet = L.map('leaflet', {
+    center: [SBJ_LAT, SBJ_LON],
+    zoom: LEAFLET_Z0,
+    zoomSnap: 0.01,
+    zoomDelta: 0.1,
+    attributionControl: false,
+    zoomControl: false,
+    dragging: false,
+    scrollWheelZoom: false,
+    doubleClickZoom: false,
+    boxZoom: false,
+    keyboard: false,
+    tap: false,
+    touchZoom: false
+  });
+
+  const layerSat = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 19, attribution: 'Tiles © Esri' }
+  );
+
+  const layerSec = L.tileLayer(
+    'https://tiles.arcgis.com/tiles/ssFJjBXIUyZDrSYZ/arcgis/rest/services/VFR_Sectional/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 19, attribution: 'FAA VFR Sectional' }
+  );
+
+  layerSat.addTo(leaflet);
+
   // ===== Canvases =====
   const map = document.getElementById('map');
   const mctx = map.getContext('2d');
@@ -282,6 +362,7 @@ Updates....
     map.width = Math.floor(r.width * devicePixelRatio);
     map.height = Math.floor(r.height * devicePixelRatio);
     mctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+    leaflet.invalidateSize();
   }
   window.addEventListener('resize', resizeMap);
   resizeMap();
@@ -296,16 +377,21 @@ Updates....
   const lctx = lcd.getContext('2d');
 
   // ===== Grid title =====
-  const GRID_TITLE = 'Becker ELT Simulator – Created by 1st Lt Kartik Santhanam, CAP | Credits: Capt Bansil ';
+  const GRID_TITLE = 'Becker ELT Simulator – Created by 1st Lt Kartik Santhanam, CAP | Credits: Capt Bansil';
 
   // ===== Map scale (Zoom) =====
   const BASE_PPNM = 28;
   let zoom = 1.0;
   const ZOOM_MIN = 0.55;
   const ZOOM_MAX = 2.40;
+
   function setZoom(z){
     zoom = clamp(z, ZOOM_MIN, ZOOM_MAX);
     zoomTxt.textContent = zoom.toFixed(2) + '×';
+
+    // Keep Leaflet scale roughly aligned to your NM grid scale
+    const zLeaf = LEAFLET_Z0 + Math.log2(zoom);
+    leaflet.setZoom(zLeaf, { animate:false });
   }
   function getPPNM(){ return BASE_PPNM * zoom; }
 
@@ -345,6 +431,9 @@ Updates....
     bankDeg: 0,
     propRad: 0,
 
+    altitudeAGL: 1500,
+    terrainFactor: 1,
+
     trainer:{
       active:false, dir:null, turned:0, samples:[],
       nullHdg:null, correctBearing:null, pausedForQuiz:false,
@@ -352,6 +441,112 @@ Updates....
     },
     history:[]
   };
+
+  // =====================
+  // TERRAIN ENGINE (FIXED)
+  // =====================
+  const tileCache = new Map();
+  const elevCache = new Map();
+
+  function latLonToTile(lat, lon, zoom){
+    const n = Math.pow(2, zoom);
+    const xFloat = (lon + 180) / 360 * n;
+    const latRad = lat * Math.PI / 180;
+    const yFloat = (1 - Math.log(Math.tan(latRad) + 1/Math.cos(latRad)) / Math.PI) / 2 * n;
+
+    const x = Math.floor(xFloat);
+    const y = Math.floor(yFloat);
+
+    const px = Math.max(0, Math.min(255, Math.floor((xFloat - x) * 256)));
+    const py = Math.max(0, Math.min(255, Math.floor((yFloat - y) * 256)));
+
+    return { x, y, px, py };
+  }
+
+  async function getTileImageDataTerrarium(z, x, y){
+    const key = `${z}/${x}/${y}`;
+    if (tileCache.has(key)) return tileCache.get(key);
+
+    const url = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
+
+    try{
+      const resp = await fetch(url, { mode: 'cors', cache: 'force-cache' });
+      if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+
+      const bmp = await createImageBitmap(blob);
+      const c = document.createElement('canvas');
+      c.width = 256; c.height = 256;
+      const cx = c.getContext('2d', { willReadFrequently: true });
+      cx.drawImage(bmp, 0, 0);
+
+      const imgData = cx.getImageData(0, 0, 256, 256);
+      tileCache.set(key, imgData);
+      return imgData;
+    } catch(e){
+      tileCache.set(key, null);
+      return null;
+    }
+  }
+
+  function terrariumPixelToMeters(r,g,b){
+    return (r * 256 + g + b / 256) - 32768;
+  }
+
+  async function getElevation(lat, lon){
+    const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+    if (elevCache.has(key)) return elevCache.get(key);
+
+    const z = 12;
+    const t = latLonToTile(lat, lon, z);
+    const imgData = await getTileImageDataTerrarium(z, t.x, t.y);
+
+    if(!imgData){
+      elevCache.set(key, 0);
+      return 0;
+    }
+
+    const idx = (t.py * 256 + t.px) * 4;
+    const r = imgData.data[idx + 0];
+    const g = imgData.data[idx + 1];
+    const b = imgData.data[idx + 2];
+
+    const elev = terrariumPixelToMeters(r,g,b);
+    elevCache.set(key, elev);
+    return elev;
+  }
+
+  async function updateTerrainFactor(){
+    const ac = nmToLatLon(state.ax, state.ay);
+    const elt = nmToLatLon(state.ex, state.ey);
+
+    const samples = 6;
+
+    const acElev = await getElevation(ac.lat, ac.lon);
+    const eltElev = await getElevation(elt.lat, elt.lon);
+
+    const aircraftAlt = acElev + state.altitudeAGL * 0.3048;
+    const eltAlt = eltElev + 2;
+
+    let obstruction = 0;
+
+    for(let i=1;i<samples;i++){
+      const tt = i / samples;
+      const lat = ac.lat + (elt.lat - ac.lat) * tt;
+      const lon = ac.lon + (elt.lon - ac.lon) * tt;
+
+      const terr = await getElevation(lat, lon);
+      const los = aircraftAlt + (eltAlt - aircraftAlt) * tt;
+
+      if (terr > los) obstruction++;
+    }
+
+    state.terrainFactor = (obstruction === 0)
+      ? 1
+      : Math.max(0.05, 1 - (obstruction/samples) * 1.2);
+  }
+
+  setInterval(updateTerrainFactor, 1000);
 
   // =====================
   // ELT AUDIO (Web Audio)
@@ -363,11 +558,11 @@ Updates....
     lfo: null,
     lfoGain: null,
     enabled: false,
-    userVol: 0.45,     // 0..1 from slider
-    baseHz: 850,       // center frequency
-    warbleHz: 7.0,     // warble rate
-    warbleDepth: 450,  // +/- Hz depth
-    pulseHz: 2.2       // pulse rate
+    userVol: 0.45,
+    baseHz: 850,
+    warbleHz: 7.0,
+    warbleDepth: 450,
+    pulseHz: 2.2
   };
 
   function initAudioOnce(){
@@ -413,45 +608,39 @@ Updates....
   function updateEltAudio(sig01){
     if (!audio.ctx || !audio.enabled) return;
 
-    // If you want audio ONLY when "Reveal ELT" is on, uncomment:
-    // if (!state.reveal) sig01 = 0;
-
     const t = performance.now() / 1000;
     const phase = (t * audio.pulseHz) % 1;
 
-    // Pulse envelope: quick attack, slower decay
     const env = phase < 0.12 ? (phase / 0.12) : Math.max(0, 1 - (phase - 0.12) / 0.55);
-
-    // Loudness follows signal strength with mild compression
     const loud = Math.pow(sig01, 1.6) * env * audio.userVol;
 
     const now = audio.ctx.currentTime;
     const targetGain = clamp(loud, 0, 0.35);
     audio.master.gain.setTargetAtTime(targetGain, now, 0.02);
 
-    // Warble gets stronger as signal increases
     const depth = 220 + 520 * Math.pow(sig01, 0.9);
     audio.lfoGain.gain.setTargetAtTime(depth, now, 0.04);
 
-    // Center frequency shifts a bit with signal
     const base = 700 + 400 * sig01;
     audio.osc.frequency.setTargetAtTime(base, now, 0.04);
   }
 
-  // ===== Signal model modified for Wing Null 3/3/2026 =====
- function signalStrength(distNm, relBearingDeg){
-  const base = 1 / (1 + Math.pow(distNm/3.2, 2));
+  // =====================
+  // Signal model (terrainFactor + flutter)
+  // =====================
+  function signalStrength(distNm, relBearingDeg){
+    const base = 1 / (1 + Math.pow(distNm/3.2, 2));
+    const relRad = relBearingDeg * Math.PI / 180;
 
-  // Convert relative bearing to radians
-  const relRad = relBearingDeg * Math.PI / 180;
+    const antennaPattern = Math.abs(Math.cos(relRad));
 
-  // Bottom antenna pattern: strong fore/aft, null off wings
-  const antennaPattern = Math.abs(Math.cos(relRad));
-  // const antennaPattern = Math.pow(Math.abs(Math.cos(relRad)), 1.8); 
-  const combined = base * antennaPattern;
+    const terrain = state.terrainFactor ?? 1;
+    const flutter = terrain < 0.7 ? (0.6 + Math.random()*0.4) : 1;
 
-  return Math.max(0, Math.min(1, combined));
-}
+    const combined = base * antennaPattern * terrain * flutter;
+    return Math.max(0, Math.min(1, combined));
+  }
+
   function dfNeedleBearing(trueBearing, distNm){
     const baseNoise = (distNm < 2.0) ? state.closeNoiseDeg : state.dfNoiseDeg;
     const scale = (distNm < 2.0) ? FILTER.nearNoiseScale : FILTER.farNoiseScale;
@@ -476,6 +665,9 @@ Updates....
   const btnAudio = document.getElementById('btnAudio');
   const audioVol = document.getElementById('audioVol');
 
+  const btnSat = document.getElementById('btnSat');
+  const btnSec = document.getElementById('btnSec');
+
   const trainerState = document.getElementById('trainerState');
   const quizArea = document.getElementById('quizArea');
   const quizPrompt = document.getElementById('quizPrompt');
@@ -483,6 +675,22 @@ Updates....
   const ans = document.getElementById('ans');
   const leftOnly = document.getElementById('leftOnly');
   const histBody = document.getElementById('histBody');
+
+  function setLayerActive(which){
+    btnSat.classList.toggle('primary', which==='sat');
+    btnSec.classList.toggle('primary', which==='sec');
+  }
+
+  btnSat.onclick = () => {
+    if (leaflet.hasLayer(layerSec)) leaflet.removeLayer(layerSec);
+    if (!leaflet.hasLayer(layerSat)) leaflet.addLayer(layerSat);
+    setLayerActive('sat');
+  };
+  btnSec.onclick = () => {
+    if (leaflet.hasLayer(layerSat)) leaflet.removeLayer(layerSat);
+    if (!leaflet.hasLayer(layerSec)) leaflet.addLayer(layerSec);
+    setLayerActive('sec');
+  };
 
   // ===== History =====
   function renderHistory(){
@@ -786,7 +994,6 @@ Updates....
   }
 
   function drawBeckerScreen(dfMagSm, sigSm, hdgMag){
-    const magDeg = Math.round(norm360(dfMagSm));
     const dfRelDeg = norm360(dfMagSm - hdgMag);
     const relDeg = norm360(dfRelDeg);
 
@@ -804,7 +1011,7 @@ Updates....
     bctx.imageSmoothingEnabled = false;
     bctx.drawImage(lcd, lcdX, lcdY, lcdW, lcdH);
 
-    drawDF517TextOverlay(magDeg, hdgMag, dfRelDeg);
+    drawDF517TextOverlay(Math.round(norm360(dfMagSm)), hdgMag, dfRelDeg);
 
     bctx.strokeStyle = 'rgba(255,255,255,0.10)';
     bctx.lineWidth = 2;
@@ -812,7 +1019,7 @@ Updates....
   }
 
   // ======================================================
-  // CAP SPRITE (procedural): red tips + CAP roundel + N#
+  // CAP SPRITE (procedural)
   // ======================================================
   const TAIL_NUMBER = 'N485CA';
 
@@ -909,7 +1116,7 @@ Updates....
     ctx.lineWidth = Math.max(1, sizePx*0.010);
     ctx.strokeRect(-wingSpan/2, -wingChord/2, wingSpan, wingChord);
 
-    // Tail number on right wing (vertical orientation)
+    // Tail number on right wing
     ctx.save();
     ctx.fillStyle = 'rgba(10,12,18,0.70)';
     ctx.font = `700 ${Math.max(8, sizePx*0.09)}px ui-monospace, Menlo, Consolas, monospace`;
@@ -948,10 +1155,9 @@ Updates....
     ctx.ellipse(0, -L*0.43, fusW*0.55, fusW*0.55, 0, 0, Math.PI*2);
     ctx.fill();
 
-    // CAP roundel on fuselage
     drawCapRoundel(ctx, 0, L*0.07, L*0.045);
 
-    // Tail number on fuselage near tail
+    // Tail number on fuselage
     ctx.save();
     ctx.fillStyle = 'rgba(10,12,18,0.68)';
     ctx.font = `800 ${Math.max(7, sizePx*0.075)}px ui-monospace, Menlo, Consolas, monospace`;
@@ -1020,27 +1226,12 @@ Updates....
   }
 
   // ===== Map drawing =====
-  function drawMap(brgTrue, dfMagSm, dToELT){
+  function drawMap(dfMagSm, dToELT){
     const W = map.getBoundingClientRect().width;
     const H = map.getBoundingClientRect().height;
     mctx.clearRect(0,0,W,H);
 
-    const PPNM = getPPNM();
     const c = mapCenter();
-
-    // grid
-    mctx.save();
-    mctx.globalAlpha = 0.18;
-    mctx.strokeStyle = '#2b3b7a';
-    mctx.lineWidth = 1;
-    const grid = 2;
-    for(let x=c.x%(grid*PPNM); x<W; x+=grid*PPNM){
-      mctx.beginPath(); mctx.moveTo(x,0); mctx.lineTo(x,H); mctx.stroke();
-    }
-    for(let y=c.y%(grid*PPNM); y<H; y+=grid*PPNM){
-      mctx.beginPath(); mctx.moveTo(0,y); mctx.lineTo(W,y); mctx.stroke();
-    }
-    mctx.restore();
 
     // title bar
     mctx.save();
@@ -1078,7 +1269,7 @@ Updates....
       mctx.restore();
     }
 
-    // ELT
+    // ELT marker
     if(state.reveal){
       const e = nmToPx(state.ex, state.ey);
       mctx.save();
@@ -1130,10 +1321,8 @@ Updates....
       mctx.restore();
     }
 
-    // aircraft sprite draw
+    // aircraft sprite
     const hdg = toRad(state.hdg);
-
-    // zoom-based scaling effect
     const baseSize = 40;
     const sizePx = baseSize * (0.85 + 0.55*zoom);
 
@@ -1152,7 +1341,9 @@ Updates....
     hdgEl.textContent = String(Math.round(norm360(state.hdg))).padStart(3,'0')+'°';
     spdEl.textContent = `${Math.round(state.spd)} kt`;
     distEl.textContent = `${state.distNm.toFixed(1)} nm`;
-    windEl.textContent = `${String(state.windDir).padStart(3,'0')}° @ ${state.windKt} kt`;
+
+    const tf = Math.round((state.terrainFactor ?? 1) * 100);
+    windEl.textContent = `${String(state.windDir).padStart(3,'0')}° @ ${state.windKt} kt  |  LOS ${tf}%`;
 
     const rel = shortestAngle(dfRelSm);
     relEl.textContent = (rel>=0?'+':'') + String(Math.round(rel)).padStart(3,'0')+'°';
@@ -1181,6 +1372,7 @@ Updates....
     let x,y;
     do { x=r(); y=r(); } while (Math.hypot(x,y) < 3);
     state.ex=x; state.ey=y;
+    updateTerrainFactor();
   }
   function clearHistory(){
     state.history = [];
@@ -1203,7 +1395,8 @@ Updates....
     state.bankDeg = 0;
     state.propRad = 0;
 
-    setZoom(1.0);
+    state.altitudeAGL = 1500;
+    state.terrainFactor = 1;
 
     clearHistory();
     abortTrainer(true);
@@ -1212,16 +1405,22 @@ Updates....
     state.trainer.lastComputed = null;
     hideComputedTick();
 
-    // keep audio state but fade to zero
     if (audio.ctx) {
       const now = audio.ctx.currentTime;
       audio.master.gain.setTargetAtTime(0.0, now, 0.03);
     }
+
+    // reset map layers to satellite
+    if (leaflet.hasLayer(layerSec)) leaflet.removeLayer(layerSec);
+    if (!leaflet.hasLayer(layerSat)) leaflet.addLayer(layerSat);
+    setLayerActive('sat');
+
+    updateTerrainFactor();
   }
 
   document.getElementById('btnCruise').onclick = () => setSpeed('cruise');
   document.getElementById('btnSlow').onclick = () => setSpeed('slow');
-  document.getElementById('btnCenter').onclick = () => state.hdg = Math.round(state.hdg/10)*10;
+  document.getElementById('btnMaxSpd').onclick = () => state.spd = MAX_SPD;
 
   document.getElementById('btnZoomIn').onclick = () => setZoom(zoom * 1.12);
   document.getElementById('btnZoomOut').onclick = () => setZoom(zoom / 1.12);
@@ -1349,8 +1548,9 @@ Updates....
     const brgTrue = bearingFromTo(state.ax, state.ay, state.ex, state.ey);
     const dToELT = Math.hypot(state.ex-state.ax, state.ey-state.ay);
     const relTrue = norm360(brgTrue - state.hdg);
+
     const sigRaw = signalStrength(dToELT, relTrue);
-  
+
     const dfMagRaw = dfNeedleBearing(brgTrue, dToELT);
     const dfRelRaw = norm360(dfMagRaw - state.hdg);
 
@@ -1364,7 +1564,6 @@ Updates....
       state.sigSmooth = lerp(state.sigSmooth, sigRaw, FILTER.signalAlpha);
     }
 
-    // ELT AUDIO follows smoothed signal
     updateEltAudio(state.sigSmooth ?? 0);
 
     if(state.sigSmooth >= FILTER.lsThreshold){
@@ -1387,7 +1586,7 @@ Updates....
     }
 
     updateUI(state.dfMagSmooth, norm360(state.dfRelSmooth), state.sigSmooth);
-    drawMap(brgTrue, state.dfMagSmooth, dToELT);
+    drawMap(state.dfMagSmooth, dToELT);
     drawBeckerScreen(state.dfMagSmooth, state.sigSmooth, state.hdg);
 
     requestAnimationFrame(loop);
@@ -1396,8 +1595,12 @@ Updates....
   // ===== init =====
   renderHistory();
   leftOnly.dispatchEvent(new Event('change'));
-  setZoom(1.0);
+  setLayerActive('sat');
   audio.userVol = (parseInt(audioVol.value, 10) || 45) / 100;
+
+  setZoom(1.0);
+
+  updateTerrainFactor();
   requestAnimationFrame(loop);
 })();
 </script>
